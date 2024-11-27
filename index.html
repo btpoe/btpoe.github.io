@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html style="padding: 0; margin: 0">
+  <head>
+    <script src="https://unpkg.com/pd-usb/dist/pd-usb.min.js"></script>
+    <script>
+      const newlineBytes = [12, 0, 52];
+
+      function stringToBytes(str) {
+        const bytes = new Uint8Array(str.length);
+        for (let i = 0; i < str.length; i++) bytes[i] = str.charCodeAt(i);
+        return bytes;
+      }
+
+      function bytesPos(haystack, needle, ptr = 0) {
+        search: while (true) {
+          let start = haystack.indexOf(needle[0], ptr);
+          if (start === -1) return -1;
+
+          ptr = start;
+          for (let i = 1; i < needle.length; i++) {
+            if (haystack[ptr + i] !== needle[i]) {
+              ptr += 1;
+              continue search;
+            }
+          }
+          // found a match
+          return ptr;
+        }
+      }
+
+      let canvas;
+      let ctx;
+      let device = null;
+      let poker = null;
+      let page = 0;
+      let trim = 0;
+      let start = 0;
+      let end = 0;
+
+      let screenWidth = 400;
+      let screenHeight = 240;
+      let sampleData = new Uint8Array();
+      let frameBuffer = new Uint8Array();
+
+      function getScreenIndexed(framebuffer) {
+        const framebufferSize = framebuffer.byteLength;
+        const indexed = new Uint8Array(screenWidth * screenHeight);
+        let srcPtr = 0;
+        let dstPtr = 0;
+        while (srcPtr < framebufferSize) {
+          // each one-byte chunk contains 8 pixels
+          const chunk = framebuffer[srcPtr++];
+          // unpack each bit of the chunk
+          for (let shift = 7; shift >= 0; shift--)
+            indexed[dstPtr++] = (chunk >> shift) & 0x1;
+        }
+        return indexed;
+      }
+
+      function renderLine(lineBuffer) {
+        const linebit = lineBuffer.subarray(0, 1);
+        const frameBuffer = lineBuffer.subarray(1);
+
+        const pixels = new Uint8Array(1600);
+        let srcPtr = 0;
+        let dstPtr = 0;
+        while (dstPtr < pixels.length) {
+          // each one-byte chunk contains 8 pixels
+          const chunk = frameBuffer[srcPtr++];
+          // unpack each bit of the chunk
+          for (let shift = 7; shift >= 0; shift--) {
+            const bit = (chunk >> shift) & 0x1;
+            pixels[dstPtr++] = bit * 255;
+            pixels[dstPtr++] = bit * 255;
+            pixels[dstPtr++] = bit * 255;
+            pixels[dstPtr++] = 255;
+          }
+        }
+
+        const line_bits = [];
+        for (let shift = 7; shift >= 0; shift--) {
+          const bit = (linebit >> shift) & 0x1;
+          line_bits.push(bit);
+        }
+
+        const line = parseInt(line_bits.slice(0, 8).reverse().join(""), 2);
+
+        const imageData = new ImageData(new Uint8ClampedArray(pixels), 400, 1);
+
+        ctx.putImageData(imageData, 0, line);
+      }
+
+      async function connectToPlaydate(button) {
+        button.parentNode.removeChild(button);
+        canvas = document.createElement("canvas");
+        canvas.width = 400;
+        canvas.height = 240;
+        canvas.setAttribute("style", "width: 166vmin; height: 100vmin");
+        document.body.appendChild(canvas);
+        ctx = canvas.getContext("2d");
+        device = await pdusb.requestConnectPlaydate();
+        if (!device.serial.isOpen) {
+          await device.open();
+        }
+        device.on("disconnect", disconnectPlaydate);
+
+        await device.serial.writeAscii("stream enable\n");
+
+        poker = setInterval(() => {
+          device.serial.writeAscii("stream poke\n");
+        }, 500);
+
+        device.isStreaming = true;
+
+        let warnings = 0;
+        while (device.isStreaming && warnings < 100) {
+          const bytes = await device.serial.readBytes(12000);
+          if (!bytes) {
+            warnings++;
+            continue;
+          }
+          warnings = 0;
+          const allData = new Uint8Array(sampleData.length + bytes.length);
+          allData.set(sampleData, 0);
+          allData.set(bytes, sampleData.length);
+
+          sampleData = allData;
+
+          let pointer = bytesPos(sampleData, newlineBytes);
+          while (pointer !== -1) {
+            const lineEnd = 50 + pointer + 5;
+            if (sampleData.length < lineEnd) {
+              break;
+            }
+
+            renderLine(sampleData.subarray(pointer + 4, lineEnd));
+            sampleData = sampleData.subarray(lineEnd);
+            pointer = bytesPos(sampleData, newlineBytes);
+          }
+        }
+
+        clearInterval(poker);
+      }
+
+      function disconnectPlaydate() {
+        device.isStreaming = false;
+        device.off("disconnect", disconnectPlaydate);
+        clearInterval(poker);
+
+        if (device.serial.isOpen) {
+          device.close();
+        }
+      }
+    </script>
+  </head>
+  <body
+    style="
+      padding: 0;
+      margin: 0;
+      background: black;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      overflow: hidden;
+    "
+  >
+    <button onclick="connectToPlaydate(event.currentTarget)">connect</button>
+  </body>
+</html>
