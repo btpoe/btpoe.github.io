@@ -5,8 +5,17 @@
     <script type="module">
       if (!navigator.serial) {
         import("https://www.unpkg.com/web-serial-polyfill?module").then(
-          ({ serial }) => {
+          ({ serial, SerialPort }) => {
             navigator.serial = serial;
+            SerialPort.prototype.addEventListener = function (name, callback) {
+              console.log(this, "add event", name, callback);
+            };
+            SerialPort.prototype.removeEventListener = function (
+              name,
+              callback
+            ) {
+              console.log(this, "remove event", name, callback);
+            };
           }
         );
       }
